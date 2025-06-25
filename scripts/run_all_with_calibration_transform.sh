@@ -18,13 +18,34 @@ python /home/ciirc/varun_ws/src/scripts/rust_publisher/run_all_publishers.py &
 PYTHON_PUBLISHERS_PID=$!
 echo "Python publishers started in the background (PID: $PYTHON_PUBLISHERS_PID)."
 
-# # --- 3. Run Static Transform Publisher ---
-# echo "Setting up environment for static transform publisher..."
-# source ~/ros2_humble/install/setup.bash
-# echo "Running static transform publisher..."
-# ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 map radar_frame &
-# STATIC_TF_PID=$!
-# echo "Static transform publisher started in the background (PID: $STATIC_TF_PID)."
+# --- 3. Run Static Transform Publishers ---
+echo "Setting up environment for static transform publishers..."
+source ~/ros2_humble/install/setup.bash
+
+echo "Starting static TF publishers..."
+
+# Define an array to hold PIDs of static transform publishers
+declare -a STATIC_TF_PIDS
+
+# Run each static_transform_publisher in the background
+ros2 run tf2_ros static_transform_publisher 0.0 0.0 0 0 0 0 radar_link radar_frame &
+STATIC_TF_PIDS+=($!)
+ros2 run tf2_ros static_transform_publisher 0.0 0.0 0 0 0 0 gps_link gps_frame &
+STATIC_TF_PIDS+=($!)
+ros2 run tf2_ros static_transform_publisher 0.0 0.0 0 0 0 0 wheel_link wheel_frame &
+STATIC_TF_PIDS+=($!)
+ros2 run tf2_ros static_transform_publisher 0.1 0.0 0.5 0.0 0.0 0.0 base_link camera_link &
+STATIC_TF_PIDS+=($!)
+ros2 run tf2_ros static_transform_publisher 0.2 0.3 0.1 0.0 0.0 1.57 base_link radar_link &
+STATIC_TF_PIDS+=($!)
+ros2 run tf2_ros static_transform_publisher -0.05 0.0 0.08 0.0 0.0 0.0 base_link unilidar_imu_initial &
+STATIC_TF_PIDS+=($!)
+ros2 run tf2_ros static_transform_publisher -0.05 0.0 0.08 0.0 0.0 0.0 base_link gps_link &
+STATIC_TF_PIDS+=($!)
+ros2 run tf2_ros static_transform_publisher -0.05 0.0 0.08 0.0 0.0 0.0 base_link wheel_link &
+STATIC_TF_PIDS+=($!)
+
+echo "Static transform publishers started in the background (PIDs: ${STATIC_TF_PIDS[*]})."
 
 # --- 4. Launch RealSense Camera ---
 echo "Setting up environment for RealSense camera..."
@@ -55,4 +76,4 @@ echo "This script will now exit, but the background processes will continue."
 # If you want the script to wait until all background processes complete,
 # uncomment the following line. However, for long-running ROS nodes,
 # this will make the script wait indefinitely.
-# wait $SSH_PID $PYTHON_PUBLISHERS_PID $STATIC_TF_PID $REALSENSE_PID $LIDAR_PID
+# wait $SSH_PID $PYTHON_PUBLISHERS_PID "${STATIC_TF_PIDS[@]}" $REALSENSE_PID $LIDAR_PID
