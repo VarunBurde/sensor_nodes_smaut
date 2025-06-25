@@ -169,7 +169,7 @@ class RobotDataPublisher(Node):
         
         # Header
         pose_msg.header.stamp = timestamp
-        pose_msg.header.frame_id = "map"
+        pose_msg.header.frame_id = "wheel_frame"
         
         # Position
         pose_msg.pose.pose.position = Point(x=robot_status.x_map, y=robot_status.y_map, z=0.0)
