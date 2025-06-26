@@ -67,15 +67,15 @@ ros2 run tf2_ros static_transform_publisher 0.0 0.0 0 0 0 0 gps_link gps_frame >
 STATIC_TF_PIDS+=($!)
 ros2 run tf2_ros static_transform_publisher 0.0 0.0 0 0 0 0 wheel_link wheel_frame > /dev/null 2>&1 &
 STATIC_TF_PIDS+=($!)
-ros2 run tf2_ros static_transform_publisher 0.1 0.0 0.5 0.0 0.0 0.0 base_link camera_link > /dev/null 2>&1 &
+ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 0.0 0.0 0.0 base_link camera_link > /dev/null 2>&1 &
 STATIC_TF_PIDS+=($!)
-ros2 run tf2_ros static_transform_publisher 0.2 0.3 0.1 0.0 0.0 1.57 base_link radar_link > /dev/null 2>&1 &
+ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 0.0 0.0 0.0 base_link radar_link > /dev/null 2>&1 &
 STATIC_TF_PIDS+=($!)
-ros2 run tf2_ros static_transform_publisher -0.05 0.0 0.08 0.0 0.0 0.0 base_link unilidar_imu_initial > /dev/null 2>&1 &
+ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 0.0 0.0 0.0 base_link unilidar_imu_initial > /dev/null 2>&1 &
 STATIC_TF_PIDS+=($!)
-ros2 run tf2_ros static_transform_publisher -0.05 0.0 0.08 0.0 0.0 0.0 base_link gps_link > /dev/null 2>&1 &
+ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 0.0 0.0 0.0 base_link gps_link > /dev/null 2>&1 &
 STATIC_TF_PIDS+=($!)
-ros2 run tf2_ros static_transform_publisher -0.05 0.0 0.08 0.0 0.0 0.0 base_link wheel_link > /dev/null 2>&1 &
+ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 0.0 0.0 0.0 base_link wheel_link > /dev/null 2>&1 &
 STATIC_TF_PIDS+=($!)
 
 ALL_PIDS+=("${STATIC_TF_PIDS[@]}") # Add all static TF PIDs to the master list
@@ -89,7 +89,11 @@ echo "Launching RealSense camera..."
 ros2 launch realsense2_camera rs_launch.py \
     rgb_camera.color_profile:="848x480x30" \
     depth_module.depth_profile:="848x480x30" \
-    align_depth.enable:=true > /dev/null 2>&1 &
+    align_depth.enable:=true \
+    pointcloud.enable:=true \
+    enable_accel:=true \
+    enable_gyro:=true \
+    unite_imu_method:=1 > /dev/null 2>&1 &
 REALSENSE_PID=$!
 ALL_PIDS+=($REALSENSE_PID)
 echo "RealSense camera launched in the background (PID: $REALSENSE_PID)."
@@ -114,7 +118,7 @@ POINT_LIO_PID=$!
 ALL_PIDS+=($POINT_LIO_PID)
 echo "point_lio launched in the background (PID: $POINT_LIO_PID)."
 
---- 7. Launch rtabmap ---
+# --- 7. Launch rtabmap ---
 echo "Setting up environment for rtabmap..."
 source ~/ros2_humble/install/setup.bash
 source ~/anirudh_ws/install/setup.bash
