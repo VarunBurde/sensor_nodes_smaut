@@ -108,37 +108,37 @@ LIDAR_PID=$!
 ALL_PIDS+=($LIDAR_PID)
 echo "Unitree Lidar launched in the background (PID: $LIDAR_PID)."
 
-# --- 6. Launch point_lio ---
-echo "Setting up environment for point_lio..."
-source ~/ros2_humble/install/setup.bash
-source ~/catkin_point_lio_unilidar/install/setup.bash
-echo "Launching point_lio..."
-ros2 launch point_lio correct_odom_unilidar_l2.launch.py > /dev/null 2>&1 &
-POINT_LIO_PID=$!
-ALL_PIDS+=($POINT_LIO_PID)
-echo "point_lio launched in the background (PID: $POINT_LIO_PID)."
+# # --- 6. Launch point_lio ---
+# echo "Setting up environment for point_lio..."
+# source ~/ros2_humble/install/setup.bash
+# source ~/catkin_point_lio_unilidar/install/setup.bash
+# echo "Launching point_lio..."
+# ros2 launch point_lio correct_odom_unilidar_l2.launch.py > /dev/null 2>&1 &
+# POINT_LIO_PID=$!
+# ALL_PIDS+=($POINT_LIO_PID)
+# echo "point_lio launched in the background (PID: $POINT_LIO_PID)."
 
-# --- 7. Launch rtabmap ---
-echo "Setting up environment for rtabmap..."
-source ~/ros2_humble/install/setup.bash
-source ~/anirudh_ws/install/setup.bash
-echo "Launching rtabmap..."
-ros2 launch rtabmap_launch rtabmap.launch.py \
-    args:="--delete_db_on_start" \
-    depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
-    rgb_topic:=/camera/camera/color/image_raw \
-    camera_info_topic:=/camera/camera/color/camera_info \
-    approx_sync:=true \
-    frame_id:=base_link \
-    odom_frame_id:=rtab_odom \
-    publish_tf_odom:=false \
-    localization:=true \
-    rtabmap_viz:=false \
-    odom_topic:=/rtabmap/odometry_raw \
-    map_frame_id:=map_rtab > /dev/null 2>&1 &
-RTABMAP_PID=$!
-ALL_PIDS+=($RTABMAP_PID)
-echo "rtabmap launched in the background (PID: $RTABMAP_PID)."
+# # --- 7. Launch rtabmap ---
+# echo "Setting up environment for rtabmap..."
+# source ~/ros2_humble/install/setup.bash
+# source ~/anirudh_ws/install/setup.bash
+# echo "Launching rtabmap..."
+# ros2 launch rtabmap_launch rtabmap.launch.py \
+#     args:="--delete_db_on_start" \
+#     depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
+#     rgb_topic:=/camera/camera/color/image_raw \
+#     camera_info_topic:=/camera/camera/color/camera_info \
+#     approx_sync:=true \
+#     frame_id:=base_link \
+#     odom_frame_id:=rtab_odom \
+#     publish_tf_odom:=false \
+#     localization:=true \
+#     rtabmap_viz:=false \
+#     odom_topic:=/rtabmap/odometry_raw \
+#     map_frame_id:=map_rtab > /dev/null 2>&1 &
+# RTABMAP_PID=$!
+# ALL_PIDS+=($RTABMAP_PID)
+# echo "rtabmap launched in the background (PID: $RTABMAP_PID)."
 
 echo "All components have been initiated in the background."
 echo "The script will now keep running to maintain the trap, do NOT close the terminal."
