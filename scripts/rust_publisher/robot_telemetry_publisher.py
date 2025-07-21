@@ -74,7 +74,6 @@ class RobotDataPublisher(Node):
         self.emergency_publisher = self.create_publisher(Bool, '/robot/emergency_active', 10)
         self.autonomous_publisher = self.create_publisher(Bool, '/robot/autonomous_state', 10)
         self.wheel_angle_publisher = self.create_publisher(Float32, '/robot/wheel_angle', 10)
-        self.rtk_fix_publisher = self.create_publisher(Int32, '/robot/gps/rtk_fix', 10)
         self.diagnostics_publisher = self.create_publisher(DiagnosticArray, '/robot/diagnostics', 10)
         
         # ZMQ setup for robot data
@@ -135,7 +134,7 @@ class RobotDataPublisher(Node):
         q.z = cr * cp * sy - sr * sp * cy
         return q
 
-    def publish_gps_data(self, nav_data: NavigationGNSS, timestamp):
+    def publish_gps_data(self, robot: RobotModel, nav_data: NavigationGNSS, timestamp):
         """Publish GPS data as NavSatFix message"""
         gps_msg = NavSatFix()
         
@@ -143,14 +142,22 @@ class RobotDataPublisher(Node):
         gps_msg.header.stamp = timestamp
         gps_msg.header.frame_id = "gps_frame"
         
-        # GPS coordinates
-        gps_msg.latitude = nav_data.lat
-        gps_msg.longitude = nav_data.lon
+        # GPS coordinates - Convert from scaled integers to decimal degrees
+        # Assuming the incoming data is scaled by 10^7 (common GPS format)
+        gps_msg.latitude = nav_data.lat / 10000000.0  # Convert to decimal degrees
+        gps_msg.longitude = nav_data.lon / 10000000.0  # Convert to decimal degrees
         gps_msg.altitude = nav_data.alt
         
-        # Status
-        gps_msg.status.status = NavSatStatus.STATUS_FIX if nav_data.num_sats > 3 else NavSatStatus.STATUS_NO_FIX
-        gps_msg.status.service = NavSatStatus.SERVICE_GPS
+        # Status - Set based on the RTK fix status
+        if robot.robot_status.rtk_fix == 2:  # RTK fix
+            gps_msg.status.status = NavSatStatus.STATUS_GBAS_FIX  # 2
+        elif nav_data.num_sats > 3:  # Regular GPS fix
+            gps_msg.status.status = NavSatStatus.STATUS_FIX  # 0
+        else:  # No fix
+            gps_msg.status.status = NavSatStatus.STATUS_NO_FIX  # -1
+        
+        # Service - Assume both GPS and Galileo (common for modern receivers in Europe)
+        gps_msg.status.service = NavSatStatus.SERVICE_GPS | NavSatStatus.SERVICE_GALILEO  # 1 + 8 = 9
         
         # Covariance (diagonal elements based on accuracy and DOP values)
         position_covariance = [0.0] * 9
@@ -253,7 +260,7 @@ class RobotDataPublisher(Node):
             current_time = self.get_clock().now().to_msg()
             
             # Publish all data types
-            self.publish_gps_data(robot.navigation_gnss, current_time)
+            self.publish_gps_data(robot, robot.navigation_gnss, current_time)
             self.publish_robot_pose(robot.robot_status, current_time)
             
             # Publish simple messages
@@ -268,10 +275,6 @@ class RobotDataPublisher(Node):
             wheel_angle_msg = Float32()
             wheel_angle_msg.data = robot.robot_status.wheel_angle
             self.wheel_angle_publisher.publish(wheel_angle_msg)
-            
-            rtk_msg = Int32()
-            rtk_msg.data = robot.robot_status.rtk_fix
-            self.rtk_fix_publisher.publish(rtk_msg)
             
             # Publish diagnostics
             self.publish_diagnostics(robot, current_time)

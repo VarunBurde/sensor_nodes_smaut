@@ -33,13 +33,13 @@ cleanup_on_exit() {
 trap cleanup_on_exit SIGINT
 
 # --- 1. Run SMAUT Robot Vision remotely ---
-echo "Executing remote smaut_robot_vision command..."
+#echo "Executing remote smaut_robot_vision command..."
 # Redirect remote output to /dev/null
-ssh root@192.168.232.50 "cd smaut_robot_vision/smaut_robot_vision && ./target/aarch64-unknown-linux-gnu/release/smaut_robot_vision config.toml > /dev/null 2>&1" &
-SSH_PID=$! # Store the PID of the SSH process
-ALL_PIDS+=($SSH_PID) # Add to the list of PIDs to manage
-echo "Remote smaut_robot_vision process started in the background (PID: $SSH_PID)."
-sleep 5 # Give the remote process a moment to initialize
+#ssh root@192.168.232.50 "cd smaut_robot_vision/smaut_robot_vision && ./target/aarch64-unknown-linux-gnu/release/smaut_robot_vision config.toml > /dev/null 2>&1" &
+#SSH_PID=$! # Store the PID of the SSH process
+#ALL_PIDS+=($SSH_PID) # Add to the list of PIDs to manage
+#echo "Remote smaut_robot_vision process started in the background (PID: $SSH_PID)."
+#sleep 5 # Give the remote process a moment to initialize
 
 # --- 2. Run Python Publishers ---
 echo "Setting up environment for Python publishers..."
@@ -89,11 +89,7 @@ echo "Launching RealSense camera..."
 ros2 launch realsense2_camera rs_launch.py \
     rgb_camera.color_profile:="848x480x30" \
     depth_module.depth_profile:="848x480x30" \
-    align_depth.enable:=true \
-    pointcloud.enable:=true \
-    enable_accel:=true \
-    enable_gyro:=true \
-    unite_imu_method:=1 > /dev/null 2>&1 &
+    align_depth.enable:=true > /dev/null 2>&1 &
 REALSENSE_PID=$!
 ALL_PIDS+=($REALSENSE_PID)
 echo "RealSense camera launched in the background (PID: $REALSENSE_PID)."

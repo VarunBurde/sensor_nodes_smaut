@@ -89,7 +89,7 @@ class RadarPointCloudPublisher(Node):
         """Convert sensor data to radar points (passthrough for now)"""
         return sensor_data_list
 
-    def create_pointcloud2_msg(self, radar_points, frame_id="radar_frame"):
+    def create_pointcloud2_msg(self, radar_points, frame_id="radar_frame"): #radar_frame
         """Convert radar points to PointCloud2 message"""
         
         # Extract XYZ coordinates from radar points
@@ -102,7 +102,8 @@ class RadarPointCloudPublisher(Node):
         
         # Fill in point data
         points_array[:, 0:3] = xyz_points         # XYZ coordinates
-        points_array[:, 3] = 100.0                # intensity (default value)
+        #points_array[:, 3] = 100.0                # intensity (default value)
+        points_array[:, 3] = np.array([p.snr for p in radar_points], dtype=np.float32)  # use SNR as intensity
         points_array[:, 4] = 0.0                  # ring (default value)
         points_array[:, 5] = 0.0                  # time (default value)
 
