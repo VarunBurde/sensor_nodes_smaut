@@ -149,12 +149,12 @@ class RobotDataPublisher(Node):
         gps_msg.altitude = nav_data.alt
         
         # Status - Set based on the RTK fix status
-        if robot.robot_status.rtk_fix == 2:  # RTK fix
+        if robot.robot_status.rtk_fix == 1:  # RTK fix
             gps_msg.status.status = NavSatStatus.STATUS_GBAS_FIX  # 2
         elif nav_data.num_sats > 3:  # Regular GPS fix
             gps_msg.status.status = NavSatStatus.STATUS_FIX  # 0
         else:  # No fix
-            gps_msg.status.status = NavSatStatus.STATUS_NO_FIX  # -1
+            gps_msg.status.status = NavSatStatus.STATUS_NO_FIX   # -1
         
         # Service - Assume both GPS and Galileo (common for modern receivers in Europe)
         gps_msg.status.service = NavSatStatus.SERVICE_GPS | NavSatStatus.SERVICE_GALILEO  # 1 + 8 = 9
