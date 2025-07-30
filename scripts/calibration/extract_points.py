@@ -11,15 +11,25 @@ class PointCloudRoiCollector(Node):
     def __init__(self):
         super().__init__('roi_pointcloud_collector')
 
-        roi_R1 = []
-        roi_R2 = []
-        roi_R3 = []
-        roi_R4 = []
-        roi_Q1 = []
-        roi_Q2 = []
-        roi_Q3 = []
-        roi_Q4 = []
-                        
+        # Size of the tracked objects in cm, x,y,z with respect to the map orientation
+        # need to take it in sensor orinetation.. but maybe 
+        roi_R1_dim = [5.2, 5.2, 5.2]
+        roi_R2_dim = [5.2, 5.2, 5.2]
+        roi_R3_dim = [18.0, 18.0, 14.0]
+        roi_R4_dim = [29.5, 16.0, 16.0]
+        roi_Q1_dim = [21.0, 5.0, 25.0]
+        roi_Q2_dim = [21.0, 5.0, 25.0]
+        roi_Q3_dim = [21.0, 5.0, 25.0]
+        roi_Q4_dim = [21.0, 5.0, 25.0]
+
+        roi_R1_pos = [201.4, 300.0, 124.0]
+        roi_R2_pos = [-216.2, 428.7, 223.0]
+        roi_R3_pos = [-164.8, 110.6, 162.5]
+        roi_R4_pos = [142.5, 182.4, 264.0]
+        roi_Q1_pos = [-203.4, 557.3, 158.0]
+        roi_Q2_pos = [-114.5, 675.1, 110.6]
+        roi_Q3_pos = [-11.6, 728.7, 197.3]
+        roi_Q4_pos = [107.2, 642.0, 176.0]              
 
         # Subscribing to LiDAR data
         self.subscription = self.create_subscription(

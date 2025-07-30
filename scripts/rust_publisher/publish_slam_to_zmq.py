@@ -165,15 +165,20 @@ class SLAMToZMQPublisher(Node):
         rtk_status_name = "RTK_FIXED" if self.rtk_fix_status == 1 else f"NO_RTK({self.rtk_fix_status})"
         self.get_logger().info(f"GPS Reference set: {self.gps_reference['is_set']}, RTK Status: {rtk_status_name}")
         
-        if hasattr(self, '_slam_reference_x') and hasattr(self, '_gps_reference_x'):
-            offset_x = self._gps_reference_x - self._slam_reference_x
-            offset_y = self._gps_reference_y - self._slam_reference_y
-            offset_phi = self._gps_reference_phi - self._slam_reference_phi if hasattr(self, '_gps_reference_phi') else 0.0
-            self.get_logger().info(f"GPS offset established: offset=({offset_x:.3f}, {offset_y:.3f}, {offset_phi:.3f}rad)")
-            self.get_logger().info(f"  SLAM ref: ({self._slam_reference_x:.3f}, {self._slam_reference_y:.3f}, {getattr(self, '_slam_reference_phi', 0.0):.3f})")
-            self.get_logger().info(f"  GPS ref: ({self._gps_reference_x:.3f}, {self._gps_reference_y:.3f}, {getattr(self, '_gps_reference_phi', 0.0):.3f})")
+        if hasattr(self, '_coordinate_transform_established'):
+            self.get_logger().info(f"Coordinate transformation established:")
+            self.get_logger().info(f"  Translation: dx={self._slam_to_gps_translation_x:.3f}, dy={self._slam_to_gps_translation_y:.3f}")
+            self.get_logger().info(f"  Rotation: dφ={self._slam_to_gps_rotation:.3f}rad ({self._slam_to_gps_rotation * 57.3:.1f}°)")
+            
+            # Show seamless handover state
+            if hasattr(self, '_last_rtk_gps_x'):
+                self.get_logger().info(f"  Last RTK state for handover:")
+                self.get_logger().info(f"    GPS: x={self._last_rtk_gps_x:.3f}, y={self._last_rtk_gps_y:.3f}, φ={self._last_rtk_gps_phi:.3f}")
+                self.get_logger().info(f"    SLAM: x={self._last_rtk_slam_x:.3f}, y={self._last_rtk_slam_y:.3f}, φ={self._last_rtk_slam_phi:.3f}")
+            else:
+                self.get_logger().info(f"  No handover state stored yet")
         else:
-            self.get_logger().info("No GPS offset established yet")
+            self.get_logger().info("No coordinate transformation established yet")
         
         if self.robot_model:
             self.get_logger().info(f"Robot model GPS data:")
@@ -291,93 +296,107 @@ class SLAMToZMQPublisher(Node):
         return self.gps_reference['is_set'] and self.rtk_fix_status == 1 and self.robot_model is not None
 
     def reset_slam_offset(self):
-        """Reset the GPS offset tracking (useful if you want to re-establish the GPS reference)"""
-        if hasattr(self, '_slam_reference_x'):
-            delattr(self, '_slam_reference_x')
-        if hasattr(self, '_slam_reference_y'):
-            delattr(self, '_slam_reference_y')
-        if hasattr(self, '_slam_reference_phi'):
-            delattr(self, '_slam_reference_phi')
-        if hasattr(self, '_gps_reference_x'):
-            delattr(self, '_gps_reference_x')
-        if hasattr(self, '_gps_reference_y'):
-            delattr(self, '_gps_reference_y')
-        if hasattr(self, '_gps_reference_phi'):
-            delattr(self, '_gps_reference_phi')
+        """Reset the coordinate transformation (useful if you want to re-establish the GPS reference)"""
+        # Reset coordinate transformation
+        if hasattr(self, '_coordinate_transform_established'):
+            delattr(self, '_coordinate_transform_established')
+        if hasattr(self, '_slam_to_gps_translation_x'):
+            delattr(self, '_slam_to_gps_translation_x')
+        if hasattr(self, '_slam_to_gps_translation_y'):
+            delattr(self, '_slam_to_gps_translation_y')
+        if hasattr(self, '_slam_to_gps_rotation'):
+            delattr(self, '_slam_to_gps_rotation')
+        
+        # Reset reference positions for seamless handover
+        if hasattr(self, '_last_gps_x'):
+            delattr(self, '_last_gps_x')
+        if hasattr(self, '_last_gps_y'):
+            delattr(self, '_last_gps_y')
+        if hasattr(self, '_last_gps_phi'):
+            delattr(self, '_last_gps_phi')
+        if hasattr(self, '_last_slam_x'):
+            delattr(self, '_last_slam_x')
+        if hasattr(self, '_last_slam_y'):
+            delattr(self, '_last_slam_y')
+        if hasattr(self, '_last_slam_phi'):
+            delattr(self, '_last_slam_phi')
         
         # Reset heading tracking
         self.previous_heading = None
         self.accumulated_heading_change = 0.0
         self.last_slam_heading = None
         
-        self.get_logger().info("GPS offset and heading tracking reset - will be re-established on next RTK fix")
+        self.get_logger().info("Coordinate transformation reset - will be re-established on next RTK fix")
 
     def apply_gps_offset(self, slam_x, slam_y, slam_phi):
-        """Apply GPS reference offset to SLAM coordinates with seamless handover and heading filtering"""
+        """Apply coordinate transformation to align SLAM map with GPS local map coordinate system"""
         if self.should_apply_gps_offset():
-            # When RTK fix is available, use GPS position and heading
+            # RTK fix available - use GPS coordinates directly
             gps_x = self.robot_model.robot_status.x_map
             gps_y = self.robot_model.robot_status.y_map
-            gps_phi = self.robot_model.robot_status.heading  # Use GPS heading
+            gps_phi = self.robot_model.robot_status.heading
             
-            # Filter GPS heading to smooth transitions
+            # Establish transformation when RTK is first achieved
+            if not hasattr(self, '_coordinate_transform_established'):
+                # Calculate transformation: SLAM -> GPS
+                self._slam_to_gps_translation_x = gps_x - slam_x
+                self._slam_to_gps_translation_y = gps_y - slam_y
+                self._slam_to_gps_rotation = self.normalize_angle_diff(gps_phi - slam_phi)
+                self._coordinate_transform_established = True
+                
+                self.get_logger().info(f"SLAM->GPS transformation: "
+                                     f"T=({self._slam_to_gps_translation_x:.3f}, {self._slam_to_gps_translation_y:.3f}), "
+                                     f"R={self._slam_to_gps_rotation:.3f}rad ({self._slam_to_gps_rotation*57.3:.1f}°)")
+            
+            # Store reference positions for seamless handover
+            self._last_gps_x = gps_x
+            self._last_gps_y = gps_y
+            self._last_gps_phi = gps_phi
+            self._last_slam_x = slam_x
+            self._last_slam_y = slam_y
+            self._last_slam_phi = slam_phi
+            
+            # Filter GPS heading for smoothness
             if self.previous_heading is not None:
                 gps_phi = self.filter_heading(gps_phi, self.previous_heading)
             
-            # Update the offset references for seamless handover when RTK is lost
-            # This ensures SLAM continues from the current GPS position and heading
-            self._slam_reference_x = slam_x
-            self._slam_reference_y = slam_y
-            self._slam_reference_phi = slam_phi
-            self._gps_reference_x = gps_x
-            self._gps_reference_y = gps_y
-            self._gps_reference_phi = gps_phi
-            
-            # Update tracking variables
             self.previous_heading = gps_phi
-            self.last_slam_heading = slam_phi
-            self.accumulated_heading_change = 0.0  # Reset accumulation when using GPS
-            
             return gps_x, gps_y, gps_phi
         else:
-            # RTK fix not available - use offset if we have established one, otherwise raw SLAM
-            if hasattr(self, '_slam_reference_x') and hasattr(self, '_gps_reference_x'):
-                # Continue from the last GPS position using SLAM relative movement
-                # This ensures seamless continuation from where GPS left off
-                offset_x = (slam_x - self._slam_reference_x) + self._gps_reference_x
-                offset_y = (slam_y - self._slam_reference_y) + self._gps_reference_y
+            # RTK not available - use seamless handover with SLAM deltas
+            if hasattr(self, '_coordinate_transform_established') and hasattr(self, '_last_gps_x'):
+                # Calculate SLAM movement from last known reference position
+                slam_delta_x = slam_x - self._last_slam_x
+                slam_delta_y = slam_y - self._last_slam_y
+                slam_delta_phi = self.normalize_angle_diff(slam_phi - self._last_slam_phi)
                 
-                # For heading, accumulate SLAM changes from the last GPS heading
-                if self.last_slam_heading is not None:
-                    # Calculate SLAM heading change since last GPS reading
-                    slam_heading_change = self.normalize_angle_diff(slam_phi - self.last_slam_heading)
-                    self.accumulated_heading_change += slam_heading_change
-                    self.last_slam_heading = slam_phi
-                    
-                    # Apply accumulated change to last GPS heading
-                    offset_phi = self._gps_reference_phi + self.accumulated_heading_change
-                    
-                    # Normalize the result
-                    while offset_phi > math.pi:
-                        offset_phi -= 2 * math.pi
-                    while offset_phi < -math.pi:
-                        offset_phi += 2 * math.pi
-                else:
-                    # Fallback to basic offset calculation
-                    offset_phi = (slam_phi - self._slam_reference_phi) + self._gps_reference_phi
-                    self.last_slam_heading = slam_phi
+                # Transform the movement deltas using standard rotation matrix
+                cos_rot = math.cos(self._slam_to_gps_rotation)
+                sin_rot = math.sin(self._slam_to_gps_rotation)
+                # Use standard rotation matrix since X-axis is working correctly
+                transformed_delta_x = slam_delta_x * cos_rot - slam_delta_y * sin_rot
+                transformed_delta_y = slam_delta_x * sin_rot + slam_delta_y * cos_rot
                 
-                # Filter the heading for smoothness
+                # Apply transformed deltas to last known GPS position
+                transformed_x = self._last_gps_x + transformed_delta_x
+                transformed_y = self._last_gps_y + transformed_delta_y
+                transformed_phi = self._last_gps_phi + slam_delta_phi
+                
+                # Normalize heading
+                while transformed_phi > math.pi:
+                    transformed_phi -= 2 * math.pi
+                while transformed_phi < -math.pi:
+                    transformed_phi += 2 * math.pi
+                
+                # Filter heading for smoothness
                 if self.previous_heading is not None:
-                    offset_phi = self.filter_heading(offset_phi, self.previous_heading)
+                    transformed_phi = self.filter_heading(transformed_phi, self.previous_heading)
                 
-                self.previous_heading = offset_phi
-                
-                return offset_x, offset_y, offset_phi
+                self.previous_heading = transformed_phi
+                return transformed_x, transformed_y, transformed_phi
             else:
-                # No offset established yet, use raw SLAM coordinates
+                # No transformation established yet - use raw SLAM
                 self.previous_heading = slam_phi
-                self.last_slam_heading = slam_phi
                 return slam_x, slam_y, slam_phi
 
     def odometry_callback(self, msg):
@@ -412,35 +431,56 @@ class SLAMToZMQPublisher(Node):
             self.slam["robot_pose_y"] = y
             self.slam["robot_pose_phi"] = phi
 
-            # Log with GPS offset status
-            if hasattr(self, '_slam_reference_x') and hasattr(self, '_gps_reference_x'):
-                # We have an established offset
+            # Detailed logging with all coordinate systems
+            if hasattr(self, '_coordinate_transform_established'):
                 if self.should_apply_gps_offset():
-                    self.get_logger().info(f"SLAM data (GPS mode):")
-                    self.get_logger().info(f"  Camera: x={raw_x:.3f}, y={raw_y:.3f}, φ={raw_phi:.3f}")
-                    self.get_logger().info(f"  Robot:  x={x:.3f}, y={y:.3f}, φ={phi:.3f} (GPS corrected)")
+                    # GPS Mode - show GPS, RTAB, and final coordinates
+                    gps_x = self.robot_model.robot_status.x_map
+                    gps_y = self.robot_model.robot_status.y_map
+                    gps_phi = self.robot_model.robot_status.heading
+                    
+                    self.get_logger().info(f"=== GPS MODE ===")
+                    self.get_logger().info(f"GPS Map:     x={gps_x:.3f}, y={gps_y:.3f}, φ={gps_phi:.3f}rad ({gps_phi*57.3:.1f}°)")
+                    self.get_logger().info(f"RTAB SLAM:   x={raw_x:.3f}, y={raw_y:.3f}, φ={mower_phi:.3f}rad ({mower_phi*57.3:.1f}°)")
+                    self.get_logger().info(f"Final Out:   x={x:.3f}, y={y:.3f}, φ={phi:.3f}rad ({phi*57.3:.1f}°) [GPS]")
                 else:
-                    self.get_logger().info(f"SLAM data (GPS-offset mode):")
-                    self.get_logger().info(f"  Camera: x={raw_x:.3f}, y={raw_y:.3f}, φ={raw_phi:.3f}")
-                    self.get_logger().info(f"  Robot:  x={x:.3f}, y={y:.3f}, φ={phi:.3f} (offset from GPS)")
+                    # SLAM Mode - show RTAB, deltas, and final coordinates
+                    if hasattr(self, '_last_gps_x'):
+                        slam_delta_x = raw_x - self._last_slam_x
+                        slam_delta_y = raw_y - self._last_slam_y
+                        slam_delta_phi = self.normalize_angle_diff(mower_phi - self._last_slam_phi)
+                        
+                        self.get_logger().info(f"=== SLAM MODE (Delta-based) ===")
+                        self.get_logger().info(f"RTAB SLAM:   x={raw_x:.3f}, y={raw_y:.3f}, φ={mower_phi:.3f}rad ({mower_phi*57.3:.1f}°)")
+                        self.get_logger().info(f"Last Ref:    GPS({self._last_gps_x:.3f},{self._last_gps_y:.3f}) SLAM({self._last_slam_x:.3f},{self._last_slam_y:.3f})")
+                        self.get_logger().info(f"SLAM Delta:  dx={slam_delta_x:.3f}, dy={slam_delta_y:.3f}, dφ={slam_delta_phi:.3f}rad")
+                        self.get_logger().info(f"Final Out:   x={x:.3f}, y={y:.3f}, φ={phi:.3f}rad ({phi*57.3:.1f}°) [SEAMLESS]")
+                    else:
+                        self.get_logger().info(f"=== SLAM MODE (No reference) ===")
+                        self.get_logger().info(f"RTAB SLAM:   x={raw_x:.3f}, y={raw_y:.3f}, φ={mower_phi:.3f}rad ({mower_phi*57.3:.1f}°)")
+                        self.get_logger().info(f"Final Out:   x={x:.3f}, y={y:.3f}, φ={phi:.3f}rad ({phi*57.3:.1f}°) [RAW]")
             else:
-                # No offset established yet
                 if self.should_apply_gps_offset():
-                    self.get_logger().info(f"SLAM data (establishing GPS offset):")
-                    self.get_logger().info(f"  Camera: x={raw_x:.3f}, y={raw_y:.3f}, φ={raw_phi:.3f}")
-                    self.get_logger().info(f"  Robot:  x={x:.3f}, y={y:.3f}, φ={phi:.3f} (GPS corrected)")
+                    # Establishing transformation - show all systems
+                    gps_x = self.robot_model.robot_status.x_map
+                    gps_y = self.robot_model.robot_status.y_map
+                    gps_phi = self.robot_model.robot_status.heading
+                    
+                    self.get_logger().info(f"=== ESTABLISHING TRANSFORMATION ===")
+                    self.get_logger().info(f"GPS Map:     x={gps_x:.3f}, y={gps_y:.3f}, φ={gps_phi:.3f}rad ({gps_phi*57.3:.1f}°)")
+                    self.get_logger().info(f"RTAB SLAM:   x={raw_x:.3f}, y={raw_y:.3f}, φ={mower_phi:.3f}rad ({mower_phi*57.3:.1f}°)")
+                    self.get_logger().info(f"Final Out:   x={x:.3f}, y={y:.3f}, φ={phi:.3f}rad ({phi*57.3:.1f}°) [GPS]")
                 else:
+                    # Raw mode - show what we're waiting for
                     status_parts = []
-                    if not self.gps_reference['is_set']:
-                        status_parts.append("waiting GPS ref")
-                    if self.rtk_fix_status != 1:
-                        status_parts.append(f"waiting RTK fix (current: {self.rtk_fix_status})")
-                    if self.robot_model is None:
-                        status_parts.append("waiting robot model")
-                    status = ", ".join(status_parts) if status_parts else "ready"
-                    self.get_logger().info(f"SLAM data (raw - {status}):")
-                    self.get_logger().info(f"  Camera: x={raw_x:.3f}, y={raw_y:.3f}, φ={raw_phi:.3f}")
-                    self.get_logger().info(f"  Robot:  x={x:.3f}, y={y:.3f}, φ={phi:.3f} (mower frame)")
+                    if not self.gps_reference['is_set']: status_parts.append("GPS ref")
+                    if self.rtk_fix_status != 1: status_parts.append(f"RTK fix")
+                    if self.robot_model is None: status_parts.append("robot model")
+                    waiting = ", ".join(status_parts) if status_parts else "ready"
+                    
+                    self.get_logger().info(f"=== RAW MODE (waiting: {waiting}) ===")
+                    self.get_logger().info(f"RTAB SLAM:   x={raw_x:.3f}, y={raw_y:.3f}, φ={mower_phi:.3f}rad ({mower_phi*57.3:.1f}°)")
+                    self.get_logger().info(f"Final Out:   x={x:.3f}, y={y:.3f}, φ={phi:.3f}rad ({phi*57.3:.1f}°) [RAW]")
             
         except Exception as e:
             self.get_logger().error(f"Error processing odometry data: {e}")
