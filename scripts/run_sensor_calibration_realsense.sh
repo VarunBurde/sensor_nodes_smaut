@@ -78,6 +78,10 @@ STATIC_TF_PIDS+=($!)
 ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 0.0 0.0 0.0 base_link wheel_link > /dev/null 2>&1 &
 STATIC_TF_PIDS+=($!)
 
+ros2 run tf2_ros static_transform_publisher 0.0 0.0 0.0 0.0 0.0 0.0 base_link camera_imu_optical_frame > /dev/null 2>&1 &
+STATIC_TF_PIDS+=($!)
+
+
 ALL_PIDS+=("${STATIC_TF_PIDS[@]}") # Add all static TF PIDs to the master list
 echo "Static transform publishers started in the background (PIDs: ${STATIC_TF_PIDS[*]})."
 
@@ -111,18 +115,18 @@ ALL_PIDS+=($LIDAR_PID)
 echo "Unitree Lidar launched in the background (PID: $LIDAR_PID)."
 
 
-# # --- 6. Launch the IMU orientation node ---
-# echo "Setting up environment for IMU orientation node..."
-# source ~/ros2_humble/install/setup.bash
-# source /home/ciirc/localization_ws/install/setup.bash
-# echo "Launching IMU orientation node..."
-# ros2 run imu_filter_madgwick imu_filter_madgwick_node --ros-args -p use_mag:=false -p imu_topic:=/camera/camera/imu -p output_imu_topic:=/imu/data_fused -r /imu/data_raw:=/camera/camera/imu > /dev/null 2>&1 &
-# IMU_FILTER_PID=$!
-# ALL_PIDS+=($IMU_FILTER_PID)
-# python /home/ciirc/anirudh_ws/imu_cov.py > /dev/null 2>&1 &
-# IMU_COV_PID=$!
-# ALL_PIDS+=($IMU_COV_PID)
-# echo "IMU orientation node launched in the background (PIDs: $IMU_FILTER_PID, $IMU_COV_PID)."
+# --- 6. Launch the IMU orientation node ---
+echo "Setting up environment for IMU orientation node..."
+source ~/ros2_humble/install/setup.bash
+source /home/ciirc/localization_ws/install/setup.bash
+echo "Launching IMU orientation node..."
+ros2 run imu_filter_madgwick imu_filter_madgwick_node --ros-args -p use_mag:=false -p imu_topic:=/camera/camera/imu -p output_imu_topic:=/imu/data_fused -p publish_tf:=false -r /imu/data_raw:=/camera/camera/imu > /dev/null 2>&1 &
+IMU_FILTER_PID=$!
+ALL_PIDS+=($IMU_FILTER_PID)
+python /home/ciirc/anirudh_ws/imu_cov.py > /dev/null 2>&1 &
+IMU_COV_PID=$!
+ALL_PIDS+=($IMU_COV_PID)
+echo "IMU orientation node launched in the background (PIDs: $IMU_FILTER_PID, $IMU_COV_PID)."
 
 # --- 7. Launch point_lio ---
 # echo "Setting up environment for point_lio..."

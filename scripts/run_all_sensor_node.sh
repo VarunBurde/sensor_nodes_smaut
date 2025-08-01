@@ -34,7 +34,11 @@ echo "Launching RealSense camera..."
 ros2 launch realsense2_camera rs_launch.py \
     rgb_camera.color_profile:="848x480x30" \
     depth_module.depth_profile:="848x480x30" \
-    align_depth.enable:=true &
+    align_depth.enable:=true \
+    pointcloud.enable:=true \
+    enable_accel:=true \
+    enable_gyro:=true \
+    unite_imu_method:=1 &
 REALSENSE_PID=$!
 echo "RealSense camera launched in the background (PID: $REALSENSE_PID)."
 
