@@ -35,7 +35,7 @@ trap cleanup_on_exit SIGINT
 # --- 1. Run SMAUT Robot Vision remotely ---
 echo "Executing remote smaut_robot_vision command..."
 # Redirect remote output to /dev/null
-ssh root@192.168.232.50 "cd smaut_robot_vision/smaut_robot_vision && ./target/aarch64-unknown-linux-gnu/release/smaut_robot_vision config.toml > /dev/null 2>&1" &
+ssh root@192.168.232.50 "cd smaut_robot_vision/smaut_robot_vision && ./target/aarch64-unknown-linux-gnu/release/smaut_robot_vision config_ciirc.toml > /dev/null 2>&1" &
 SSH_PID=$! # Store the PID of the SSH process
 ALL_PIDS+=($SSH_PID) # Add to the list of PIDs to manage
 echo "Remote smaut_robot_vision process started in the background (PID: $SSH_PID)."
@@ -139,26 +139,26 @@ echo "IMU orientation node launched in the background (PIDs: $IMU_FILTER_PID, $I
 # echo "point_lio launched in the background (PID: $POINT_LIO_PID)."
 
 # --- 8. Launch rtabmap ---
-echo "Setting up environment for rtabmap..."
-source ~/ros2_humble/install/setup.bash
-source ~/anirudh_ws/install/setup.bash
-echo "Launching rtabmap..."
-ros2 launch rtabmap_launch rtabmap.launch.py \
-    args:="--delete_db_on_start" \
-    depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
-    rgb_topic:=/camera/camera/color/image_raw \
-    camera_info_topic:=/camera/camera/color/camera_info \
-    approx_sync:=true \
-    frame_id:=base_link \
-    odom_frame_id:=rtab_odom \
-    publish_tf_odom:=false \
-    localization:=true \
-    rtabmap_viz:=false \
-    odom_topic:=/rtabmap/odometry_raw \
-    map_frame_id:=map_rtab > /dev/null 2>&1 &
-RTABMAP_PID=$!
-ALL_PIDS+=($RTABMAP_PID)
-echo "rtabmap launched in the background (PID: $RTABMAP_PID)."
+#echo "Setting up environment for rtabmap..."
+#source ~/ros2_humble/install/setup.bash
+#source ~/anirudh_ws/install/setup.bash
+#echo "Launching rtabmap..."
+#ros2 launch rtabmap_launch rtabmap.launch.py \
+#    args:="--delete_db_on_start" \
+#    depth_topic:=/camera/camera/aligned_depth_to_color/image_raw \
+#    rgb_topic:=/camera/camera/color/image_raw \
+#    camera_info_topic:=/camera/camera/color/camera_info \
+#    approx_sync:=true \
+#    frame_id:=base_link \
+#    odom_frame_id:=rtab_odom \
+#    publish_tf_odom:=false \
+#    localization:=true \
+#    rtabmap_viz:=false \
+#    odom_topic:=/rtabmap/odometry_raw \
+#    map_frame_id:=map_rtab > /dev/null 2>&1 &
+#RTABMAP_PID=$!
+#ALL_PIDS+=($RTABMAP_PID)
+#echo "rtabmap launched in the background (PID: $RTABMAP_PID)."
 
 # echo "All components have been initiated in the background."
 # echo "The script will now keep running to maintain the trap, do NOT close the terminal."

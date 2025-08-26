@@ -33,12 +33,12 @@ class NavigationGNSS:
     hdop: float
     vdop: float
     geoid_height: float
-    x_local: float
-    y_local: float
-    heading: float
-    rel_pos_n:float
-    rel_pos_e:float
-    rel_pos_d:float
+    x_local: float  # Local X position in meters
+    y_local: float  # Local Y position in meters
+    heading: float  # Heading in radians
+    rel_pos_n: float
+    rel_pos_e: float
+    rel_pos_d: float
     acc_n: float
     acc_e: float
     acc_d: float
@@ -86,6 +86,8 @@ class SLAMToZMQPublisher(Node):
         
         # Conversion factor from radians to degrees
         self.CONVERT = 57.29577951308232
+        self.MAX_TRANSFORMATION_DIST_ERR = 10 # cm
+        self.MAX_TRANSFORMATION_ANGLE_ERR = 2 # degrees
         
         # SLAM data structure
         self.slam = {
@@ -107,6 +109,29 @@ class SLAMToZMQPublisher(Node):
         self.robot_model = None
         self.rtk_fix_status = 0  # Will be updated from robot model data
         
+        # GPS quality and stability parameters
+        self.gps_quality_threshold = 0.5  # meters, only use GPS if accuracy is better
+        self.max_gps_jump_distance = 2.0  # meters, reject GPS readings that jump more than this
+        self.rtk_stability_time = 3.0  # seconds, require RTK to be stable for this long
+        self.transformation_lock_time = 10.0  # seconds, minimum time before allowing transformation update
+        self.min_satellites = 8  # minimum number of satellites for reliable GPS
+        self.gps_buffer_size = 5  # number of readings to average for smoothing
+        
+        # GPS tracking variables
+        self.previous_gps_position = None  # (x, y, timestamp)
+        self.rtk_stable_since = None  # timestamp when RTK became stable
+        self.last_transformation_time = None
+        self.transformation_quality = None  # GPS accuracy when transformation was established
+        self.gps_position_buffer = []  # buffer for GPS smoothing
+        
+        # transformation GPS to SLAM map variables
+        self.gps_to_slam_transformation_accuracy = 0.0
+        self.gps_to_slam_transformation_accurate = False
+        self.gps_to_slam_transformation_distance_err = 0 # cm
+        self.gps_to_slam_transformation_angle_err = 0
+        self.gps_to_slam_transformation_valid = False
+
+
         # Heading tracking and filtering
         self.previous_heading = None
         self.heading_filter_alpha = 0.8  # Filter coefficient (0.0 = no filtering, 1.0 = no change)
@@ -300,9 +325,155 @@ class SLAMToZMQPublisher(Node):
             
         return mower_heading
 
+    def is_gps_quality_acceptable(self):
+        """Check if current GPS quality meets our standards"""
+        if not self.robot_model or not self.robot_model.navigation_gnss:
+            return False
+        
+        gnss = self.robot_model.navigation_gnss
+        
+        # Check accuracy
+        if gnss.accuracy > self.gps_quality_threshold:
+            return False
+        
+        # Check number of satellites
+        if gnss.num_sats < self.min_satellites:
+            return False
+        
+        # Check HDOP (horizontal dilution of precision) - lower is better
+        if gnss.hdop > 2.0:
+            return False
+        
+        return True
+
+    def detect_gps_jump(self, current_x, current_y):
+        """Detect if GPS position represents an unrealistic jump"""
+        if self.previous_gps_position is None:
+            return False  # No previous position to compare
+        
+        prev_x, prev_y, prev_time = self.previous_gps_position
+        current_time = time.time()
+        
+        # Calculate distance and time difference
+        distance = math.sqrt((current_x - prev_x)**2 + (current_y - prev_y)**2)
+        time_diff = current_time - prev_time
+        
+        # If time difference is too small, skip check to avoid division by zero
+        if time_diff < 0.05:  # 50ms
+            return False
+        
+        # Calculate implied speed (m/s)
+        implied_speed = distance / time_diff
+        
+        # For a mower/robot, speeds > 5 m/s (18 km/h) are unrealistic
+        max_realistic_speed = 5.0  # m/s
+        
+        # Also check absolute distance jump
+        if distance > self.max_gps_jump_distance or implied_speed > max_realistic_speed:
+            self.get_logger().warn(f"GPS jump detected: {distance:.2f}m in {time_diff:.2f}s (speed: {implied_speed:.2f}m/s)")
+            return True
+        
+        return False
+
+    def is_rtk_stable(self):
+        """Check if RTK has been stable for required duration"""
+        if self.rtk_fix_status != 1:
+            self.rtk_stable_since = None
+            return False
+        
+        current_time = time.time()
+        
+        if self.rtk_stable_since is None:
+            self.rtk_stable_since = current_time
+            return False
+        
+        return (current_time - self.rtk_stable_since) >= self.rtk_stability_time
+
+    def smooth_gps_position(self, x, y, phi):
+        """Apply smoothing filter to GPS position"""
+        current_time = time.time()
+        
+        # Add current reading to buffer
+        self.gps_position_buffer.append((x, y, phi, current_time))
+        
+        # Remove old readings (keep only recent ones)
+        while len(self.gps_position_buffer) > self.gps_buffer_size:
+            self.gps_position_buffer.pop(0)
+        
+        # If buffer is not full, return current reading
+        if len(self.gps_position_buffer) < 3:
+            return x, y, phi
+        
+        # Calculate weighted average (more weight to recent readings)
+        total_weight = 0
+        weighted_x = 0
+        weighted_y = 0
+        weighted_phi_x = 0  # Use sin/cos for angle averaging
+        weighted_phi_y = 0
+        
+        for i, (buf_x, buf_y, buf_phi, buf_time) in enumerate(self.gps_position_buffer):
+            # Give more weight to recent readings
+            weight = i + 1
+            weighted_x += buf_x * weight
+            weighted_y += buf_y * weight
+            weighted_phi_x += math.cos(buf_phi) * weight
+            weighted_phi_y += math.sin(buf_phi) * weight
+            total_weight += weight
+        
+        # Calculate averages
+        smoothed_x = weighted_x / total_weight
+        smoothed_y = weighted_y / total_weight
+        smoothed_phi = math.atan2(weighted_phi_y / total_weight, weighted_phi_x / total_weight)
+        
+        return smoothed_x, smoothed_y, smoothed_phi
+
+    def should_update_transformation(self, gps_accuracy):
+        """Determine if coordinate transformation should be updated"""
+        current_time = time.time()
+        
+        # If no transformation exists, always update (if other conditions are met)
+        if not hasattr(self, '_coordinate_transform_established'):
+            return True
+        
+        # Check if enough time has passed since last update
+        if (self.last_transformation_time is not None and 
+            current_time - self.last_transformation_time < self.transformation_lock_time):
+            return False
+        
+        # Only update if new GPS quality is significantly better
+        if (self.transformation_quality is not None and 
+            gps_accuracy >= self.transformation_quality * 0.8):  # Must be at least 20% better
+            return False
+        
+        return True
+
     def should_apply_gps_offset(self):
-        """Check if we should apply GPS offset (GPS reference set and RTK fix achieved)"""
-        return self.gps_reference['is_set'] and self.rtk_fix_status == 1 and self.robot_model is not None
+        """Check if we should apply GPS offset with comprehensive quality checks"""
+        # Basic requirements
+        if not (self.gps_reference['is_set'] and self.rtk_fix_status == 1 and self.robot_model is not None):
+            return False
+        
+        # GPS quality requirements
+        if not self.is_gps_quality_acceptable():
+            return False
+        
+        # RTK stability requirements
+        if not self.is_rtk_stable():
+            return False
+        
+        # GPS jump detection
+        gps_x = self.robot_model.robot_status.x_map
+        gps_y = self.robot_model.robot_status.y_map
+        
+        if self.detect_gps_jump(gps_x, gps_y):
+            return False
+        
+        # Transformation update requirements
+        gps_accuracy = self.robot_model.navigation_gnss.accuracy
+        if not self.should_update_transformation(gps_accuracy):
+            return False
+        
+        return True
 
     def reset_slam_offset(self):
         """Reset the coordinate transformation (useful if you want to re-establish the GPS reference)"""
@@ -330,22 +501,55 @@ class SLAMToZMQPublisher(Node):
         if hasattr(self, '_last_slam_phi'):
             delattr(self, '_last_slam_phi')
         
+        # Reset GPS tracking variables
+        self.previous_gps_position = None
+        self.rtk_stable_since = None
+        self.last_transformation_time = None
+        self.transformation_quality = None
+        self.gps_position_buffer = []
+        
         # Reset heading tracking
         self.previous_heading = None
         self.accumulated_heading_change = 0.0
         self.last_slam_heading = None
+
+        self.gps_to_slam_transformation_accuracy = 0.0
+        self.gps_to_slam_transformation_accurate = False
         
-        self.get_logger().info("Coordinate transformation reset - will be re-established on next RTK fix")
+        self.get_logger().info("Coordinate transformation reset - will be re-established on next stable RTK fix")
 
     def apply_gps_offset(self, slam_x, slam_y, slam_phi):
         """Apply coordinate transformation to align SLAM map with GPS local map coordinate system"""
-        if self.should_apply_gps_offset():
-            # RTK fix available - use GPS coordinates directly
-            gps_x = self.robot_model.robot_status.x_map
-            gps_y = self.robot_model.robot_status.y_map
-            gps_phi = self.robot_model.robot_status.heading
+        # Check if we should use GPS coordinates with all quality checks
+        use_gps = self.should_apply_gps_offset()
+        
+        if use_gps:
+            # High-quality RTK fix available - use GPS coordinates
+            raw_gps_x = self.robot_model.robot_status.x_map
+            raw_gps_y = self.robot_model.robot_status.y_map
+            raw_gps_phi = self.robot_model.robot_status.heading
             
-            # Establish transformation when RTK is first achieved
+            # Apply GPS smoothing
+            gps_x, gps_y, gps_phi = self.smooth_gps_position(raw_gps_x, raw_gps_y, raw_gps_phi)
+            
+            # Update GPS position tracking
+            current_time = time.time()
+            self.previous_gps_position = (gps_x, gps_y, current_time)
+
+            dx = gps_x - slam_x
+            dy = gps_y - slam_y
+
+            # if distance between 2 points is less than 
+            self.gps_to_slam_transformation_distance_err = math.sqrt(dx**2 + dy**2)
+            self.gps_to_slam_transformation_angle_err =  abs(self.normalize_angle_diff(gps_phi - slam_phi))
+
+            if (( self.gps_to_slam_transformation_distance_err < self.MAX_TRANSFORMATION_DIST_ERR) and (self.gps_to_slam_transformation_angle_err*57.3 < self.MAX_TRANSFORMATION_ANGLE_ERR)):
+                self.gps_to_slam_transformation_valid = True
+            else:
+                self.gps_to_slam_transformation_valid = False
+
+            
+            # Establish transformation when high-quality RTK is first achieved
             if not hasattr(self, '_coordinate_transform_established'):
                 # Calculate transformation: SLAM -> GPS
                 self._slam_to_gps_translation_x = gps_x - slam_x
@@ -353,9 +557,34 @@ class SLAMToZMQPublisher(Node):
                 self._slam_to_gps_rotation = self.normalize_angle_diff(gps_phi - slam_phi)
                 self._coordinate_transform_established = True
                 
-                self.get_logger().info(f"SLAM->GPS transformation: "
+                # Record transformation quality and time
+                self.transformation_quality = self.robot_model.navigation_gnss.accuracy
+                self.last_transformation_time = current_time
+                
+                self.get_logger().info(f"SLAM->GPS transformation established: "
                                      f"T=({self._slam_to_gps_translation_x:.3f}, {self._slam_to_gps_translation_y:.3f}), "
-                                     f"R={self._slam_to_gps_rotation:.3f}rad ({self._slam_to_gps_rotation*57.3:.1f}°)")
+                                     f"R={self._slam_to_gps_rotation:.3f}rad ({self._slam_to_gps_rotation*57.3:.1f}°), "
+                                     f"T_err={self.gps_to_slam_transformation_distance_err:.3f}, phi_err={self.gps_to_slam_transformation_angle_err*57.3:.1f}°, Transfromation_valid:{self.gps_to_slam_transformation_valid} "
+                                     f"Accuracy of GPS={self.transformation_quality:.2f}m")
+            else:
+                # Update existing transformation if conditions are met
+                if self.should_update_transformation(self.robot_model.navigation_gnss.accuracy):
+                    # Update transformation
+                    self._slam_to_gps_translation_x = gps_x - slam_x
+                    self._slam_to_gps_translation_y = gps_y - slam_y
+                    self._slam_to_gps_rotation = self.normalize_angle_diff(gps_phi - slam_phi)
+
+                    # Update quality and time
+                    old_quality = self.transformation_quality
+                    self.transformation_quality = self.robot_model.navigation_gnss.accuracy
+                    self.last_transformation_time = current_time
+                    
+                    self.get_logger().info(f"SLAM->GPS transformation updated: "
+                                         f"Quality improved from {old_quality:.2f}m to {self.transformation_quality:.2f}m"
+                                         f"T=({self._slam_to_gps_translation_x:.3f}, {self._slam_to_gps_translation_y:.3f}), "
+                                         f"R={self._slam_to_gps_rotation:.3f}rad ({self._slam_to_gps_rotation*57.3:.1f}°), "
+                                         f"T_err={self.gps_to_slam_transformation_distance_err:.3f}, phi_err={self.gps_to_slam_transformation_angle_err*57.3:.1f}°, Transfromation_valid:{self.gps_to_slam_transformation_valid} "
+                                         f"Accuracy of GPS={self.transformation_quality:.2f}m")
             
             # Store reference positions for seamless handover
             self._last_gps_x = gps_x
@@ -372,7 +601,40 @@ class SLAMToZMQPublisher(Node):
             self.previous_heading = gps_phi
             return gps_x, gps_y, gps_phi
         else:
-            # RTK not available - use seamless handover with SLAM deltas
+            # GPS not reliable - use seamless handover with SLAM deltas or raw SLAM
+            gps_rejection_reasons = []
+            
+            # Detailed logging of why GPS was rejected
+            if not self.gps_reference['is_set']:
+                gps_rejection_reasons.append("no GPS reference")
+            if self.rtk_fix_status != 1:
+                gps_rejection_reasons.append(f"RTK status={self.rtk_fix_status}")
+            if self.robot_model is None:
+                gps_rejection_reasons.append("no robot model")
+            elif not self.is_gps_quality_acceptable():
+                gnss = self.robot_model.navigation_gnss
+                gps_rejection_reasons.append(f"poor quality (acc={gnss.accuracy:.2f}m, sats={gnss.num_sats}, hdop={gnss.hdop:.1f})")
+            elif not self.is_rtk_stable():
+                if self.rtk_stable_since:
+                    stable_time = time.time() - self.rtk_stable_since
+                    gps_rejection_reasons.append(f"RTK unstable ({stable_time:.1f}s < {self.rtk_stability_time}s)")
+                else:
+                    gps_rejection_reasons.append("RTK just acquired")
+            elif self.robot_model and self.detect_gps_jump(self.robot_model.robot_status.x_map, self.robot_model.robot_status.y_map):
+                gps_rejection_reasons.append("GPS jump detected")
+            elif not self.should_update_transformation(self.robot_model.navigation_gnss.accuracy if self.robot_model else float('inf')):
+                gps_rejection_reasons.append("transformation locked")
+            
+            # Log rejection reason occasionally
+            if hasattr(self, '_last_rejection_log_time'):
+                if time.time() - self._last_rejection_log_time > 5.0:  # Every 5 seconds
+                    rejection_reason = ", ".join(gps_rejection_reasons)
+                    self.get_logger().info(f"GPS rejected: {rejection_reason}")
+                    self._last_rejection_log_time = time.time()
+            else:
+                self._last_rejection_log_time = time.time()
+            
+            # Use seamless handover with SLAM deltas if transformation exists
             if hasattr(self, '_coordinate_transform_established') and hasattr(self, '_last_gps_x'):
                 # Calculate SLAM movement from last known reference position
                 slam_delta_x = slam_x - self._last_slam_x
@@ -435,47 +697,64 @@ class SLAMToZMQPublisher(Node):
             x, y, phi = self.apply_gps_offset(raw_x, raw_y, mower_phi)
             
             # Update SLAM data
-            self.slam["validity"] = True  # Assume valid if we receive data
+            # self.slam["validity"] = False  # automatically False.. turn true only if coordinate transform is established
             self.slam["robot_pose_x"] = x
             self.slam["robot_pose_y"] = y
             self.slam["robot_pose_phi"] = phi
 
             # Detailed logging with all coordinate systems
-            if hasattr(self, '_coordinate_transform_established'):
+            # has the transformation, but it´s not within the range
+            if hasattr(self, '_coordinate_transform_established') and not self.gps_to_slam_transformation_valid:
+
+                self.slam["validity"] = False # Alignment is not proper
+
+                # If the transformation is established and we have gps, check if the position/transformation is correct
+
+                # if there is GPS, use GPS not slam
                 if self.should_apply_gps_offset():
+                    
                     # GPS Mode - show GPS, RTAB, and final coordinates
                     gps_x = self.robot_model.robot_status.x_map
                     gps_y = self.robot_model.robot_status.y_map
                     gps_phi = self.robot_model.robot_status.heading
+
                     
-                    self.get_logger().info(f"=== GPS MODE ===")
+                    
+                    self.get_logger().info(f"=== GPS MODE === ESTABLISHING PRECISE TRANSFORMATION")
                     self.get_logger().info(f"GPS Map:     x={gps_x:.3f}, y={gps_y:.3f}, φ={gps_phi:.3f}rad ({gps_phi*57.3:.1f}°)")
                     self.get_logger().info(f"RTAB SLAM:   x={raw_x:.3f}, y={raw_y:.3f}, φ={mower_phi:.3f}rad ({mower_phi*57.3:.1f}°)")
                     self.get_logger().info(f"Final Out:   x={x:.3f}, y={y:.3f}, φ={phi:.3f}rad ({phi*57.3:.1f}°) [GPS]")
-                else:
+
+            elif hasattr(self, '_coordinate_transform_established') and self.gps_to_slam_transformation_valid:
                     # SLAM Mode - show RTAB, deltas, and final coordinates
+
+                    self.slam["validity"] = True # Alignment is proper
+
                     if hasattr(self, '_last_gps_x'):
                         slam_delta_x = raw_x - self._last_slam_x
                         slam_delta_y = raw_y - self._last_slam_y
                         slam_delta_phi = self.normalize_angle_diff(mower_phi - self._last_slam_phi)
                         
-                        self.get_logger().info(f"=== SLAM MODE (Delta-based) ===")
+                        self.get_logger().info(f"=== SLAM MODE (Delta-based) === alignment is proper")
                         self.get_logger().info(f"RTAB SLAM:   x={raw_x:.3f}, y={raw_y:.3f}, φ={mower_phi:.3f}rad ({mower_phi*57.3:.1f}°)")
                         self.get_logger().info(f"Last Ref:    GPS({self._last_gps_x:.3f},{self._last_gps_y:.3f}) SLAM({self._last_slam_x:.3f},{self._last_slam_y:.3f})")
                         self.get_logger().info(f"SLAM Delta:  dx={slam_delta_x:.3f}, dy={slam_delta_y:.3f}, dφ={slam_delta_phi:.3f}rad")
                         self.get_logger().info(f"Final Out:   x={x:.3f}, y={y:.3f}, φ={phi:.3f}rad ({phi*57.3:.1f}°) [SEAMLESS]")
                     else:
-                        self.get_logger().info(f"=== SLAM MODE (No reference) ===")
+                        self.get_logger().info(f"=== SLAM MODE (No reference) === alignment is proper")
                         self.get_logger().info(f"RTAB SLAM:   x={raw_x:.3f}, y={raw_y:.3f}, φ={mower_phi:.3f}rad ({mower_phi*57.3:.1f}°)")
                         self.get_logger().info(f"Final Out:   x={x:.3f}, y={y:.3f}, φ={phi:.3f}rad ({phi*57.3:.1f}°) [RAW]")
             else:
+
+                self.slam["validity"] = False # alignment of the SLAM map is not proper
+
                 if self.should_apply_gps_offset():
                     # Establishing transformation - show all systems
                     gps_x = self.robot_model.robot_status.x_map
                     gps_y = self.robot_model.robot_status.y_map
                     gps_phi = self.robot_model.robot_status.heading
                     
-                    self.get_logger().info(f"=== ESTABLISHING TRANSFORMATION ===")
+                    self.get_logger().info(f"=== ESTABLISHING TRANSFORMATION === There is no proper alignment")
                     self.get_logger().info(f"GPS Map:     x={gps_x:.3f}, y={gps_y:.3f}, φ={gps_phi:.3f}rad ({gps_phi*57.3:.1f}°)")
                     self.get_logger().info(f"RTAB SLAM:   x={raw_x:.3f}, y={raw_y:.3f}, φ={mower_phi:.3f}rad ({mower_phi*57.3:.1f}°)")
                     self.get_logger().info(f"Final Out:   x={x:.3f}, y={y:.3f}, φ={phi:.3f}rad ({phi*57.3:.1f}°) [GPS]")

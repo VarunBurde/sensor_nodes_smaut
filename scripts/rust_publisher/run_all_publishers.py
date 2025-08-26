@@ -35,12 +35,12 @@ def main():
         time.sleep(2)
         
         # Start radar pointcloud publisher
-        print("Starting radar pointcloud publisher...")
-        radar_proc = subprocess.Popen([
-            sys.executable, 
-            os.path.join(script_dir, "radar_pointcloud_publisher.py")
-        ])
-        processes.append(radar_proc)
+        #print("Starting radar pointcloud publisher...")
+        #radar_proc = subprocess.Popen([
+        #    sys.executable, 
+        #    os.path.join(script_dir, "radar_pointcloud_publisher.py")
+        #])
+        #processes.append(radar_proc)
         
         print("Both publishers started successfully!")
         print("\nPublished topics:")

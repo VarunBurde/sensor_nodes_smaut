@@ -36,6 +36,15 @@ class NavigationGNSS:
     hdop: float
     vdop: float
     geoid_height: float
+    x_local: float
+    y_local: float
+    heading: float
+    rel_pos_n: float
+    rel_pos_e: float
+    rel_pos_d: float
+    acc_n: float
+    acc_e: float
+    acc_d: float
 
 @dataclass
 class RobotStatus:
