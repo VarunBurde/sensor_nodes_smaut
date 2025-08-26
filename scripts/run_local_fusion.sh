@@ -1,3 +1,4 @@
+#!/bin/bash
 source ~/ros2_humble/install/setup.bash 
 source ~/localization_ws/install/setup.bash 
 

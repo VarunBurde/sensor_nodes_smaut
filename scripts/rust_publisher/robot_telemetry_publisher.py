@@ -10,7 +10,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import NavSatFix, NavSatStatus
-from geometry_msgs.msg import PoseWithCovarianceStamped, Pose, Point, Quaternion
+from geometry_msgs.msg import PoseWithCovarianceStamped, Pose, Point, Quaternion, Vector3Stamped
 from std_msgs.msg import Header, Float32, Bool, Int32
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 import math
@@ -23,7 +23,7 @@ class Info:
 
 @dataclass
 class PowerManagement:
-    batery_voltage: float
+    battery_voltage: float
 
 @dataclass
 class NavigationGNSS:
@@ -83,7 +83,12 @@ class RobotDataPublisher(Node):
         self.emergency_publisher = self.create_publisher(Bool, '/robot/emergency_active', 10)
         self.autonomous_publisher = self.create_publisher(Bool, '/robot/autonomous_state', 10)
         self.wheel_angle_publisher = self.create_publisher(Float32, '/robot/wheel_angle', 10)
+        self.battery_publisher = self.create_publisher(Float32, '/robot/battery_voltage', 10)
+        self.speed_publisher = self.create_publisher(Float32, '/robot/speed', 10)
         self.diagnostics_publisher = self.create_publisher(DiagnosticArray, '/robot/diagnostics', 10)
+        # Publishers for relative position and acceleration
+        self.rel_pos_publisher = self.create_publisher(Vector3Stamped, '/robot/rel_position', 10)
+        self.acc_publisher = self.create_publisher(Vector3Stamped, '/robot/acceleration', 10)
         
         # ZMQ setup for robot data
         self.zmq_context = zmq.Context()
@@ -116,13 +121,18 @@ class RobotDataPublisher(Node):
 
     def parse_robot_model(self, data: dict) -> RobotModel:
         """Parse robot model data from ZMQ message"""
+        # Fix typo in power_management field key if present
+        pm_raw = data.get("power_management", {})
+        # rename 'batery_voltage' to 'battery_voltage'
+        if 'batery_voltage' in pm_raw:
+            pm_raw['battery_voltage'] = pm_raw.pop('batery_voltage')
         return RobotModel(
-            info=Info(**data["info"]),
-            robot_status=RobotStatus(**data["robot_status"]),
-            navigation_gnss=NavigationGNSS(**data["navigation_gnss"]),
-            power_management=PowerManagement(**data["power_management"]),
-            emergency_active=data["emergency_active"],
-            dynamics=RobotDynamics(**data["dynamics"]),
+            info=Info(**data.get("info", {})),
+            robot_status=RobotStatus(**data.get("robot_status", {})),
+            navigation_gnss=NavigationGNSS(**data.get("navigation_gnss", {})),
+            power_management=PowerManagement(**pm_raw),
+            emergency_active=data.get("emergency_active", False),
+            dynamics=RobotDynamics(**data.get("dynamics", {})),
         )
 
     def euler_to_quaternion(self, heading):
@@ -179,7 +189,7 @@ class RobotDataPublisher(Node):
         
         self.gps_publisher.publish(gps_msg)
 
-    def publish_robot_pose(self, robot_status: RobotStatus, timestamp):
+    def publish_robot_pose(self, nav_data: NavigationGNSS, timestamp):
         """Publish robot pose with covariance"""
         pose_msg = PoseWithCovarianceStamped()
         
@@ -188,10 +198,10 @@ class RobotDataPublisher(Node):
         pose_msg.header.frame_id = "wheel_frame"
         
         # Position
-        pose_msg.pose.pose.position = Point(x=robot_status.x_map, y=robot_status.y_map, z=0.0)
+        pose_msg.pose.pose.position = Point(x=nav_data.x_local, y=nav_data.y_local, z=0.0)
         
         # Orientation (convert heading to quaternion)
-        pose_msg.pose.pose.orientation = self.euler_to_quaternion(robot_status.heading)
+        pose_msg.pose.pose.orientation = self.euler_to_quaternion(nav_data.heading)
         
         # Covariance (6x6 matrix for pose)
         covariance = [0.0] * 36
@@ -249,7 +259,24 @@ class RobotDataPublisher(Node):
             KeyValue(key="serial_number", value=robot.info.serial_number)
         ]
         
-        diag_array.status = [gps_status, system_status]
+        # Battery diagnostics
+        battery_status = DiagnosticStatus()
+        battery_status.name = "Battery"
+        battery_status.message = f"Voltage: {robot.power_management.battery_voltage:.2f}V"
+        battery_status.hardware_id = robot.info.serial_number
+        
+        if robot.power_management.battery_voltage > 12.0:  # Assuming 12V system
+            battery_status.level = DiagnosticStatus.OK
+        elif robot.power_management.battery_voltage > 11.0:
+            battery_status.level = DiagnosticStatus.WARN
+        else:
+            battery_status.level = DiagnosticStatus.ERROR
+        
+        battery_status.values = [
+            KeyValue(key="battery_voltage", value=str(robot.power_management.battery_voltage))
+        ]
+        
+        diag_array.status = [gps_status, system_status, battery_status]
         self.diagnostics_publisher.publish(diag_array)
 
     def process_zmq_messages(self):
@@ -270,7 +297,7 @@ class RobotDataPublisher(Node):
             
             # Publish all data types
             self.publish_gps_data(robot, robot.navigation_gnss, current_time)
-            self.publish_robot_pose(robot.robot_status, current_time)
+            self.publish_robot_pose(robot.navigation_gnss, current_time)
             
             # Publish simple messages
             emergency_msg = Bool()
@@ -285,6 +312,32 @@ class RobotDataPublisher(Node):
             wheel_angle_msg.data = robot.robot_status.wheel_angle
             self.wheel_angle_publisher.publish(wheel_angle_msg)
             
+            # Publish battery voltage
+            battery_msg = Float32()
+            battery_msg.data = robot.power_management.battery_voltage
+            self.battery_publisher.publish(battery_msg)
+            
+            # Publish speed
+            speed_msg = Float32()
+            speed_msg.data = robot.robot_status.speed
+            self.speed_publisher.publish(speed_msg)
+            
+            # Publish relative position
+            rel_msg = Vector3Stamped()
+            rel_msg.header.stamp = current_time
+            rel_msg.header.frame_id = 'wheel_frame'
+            rel_msg.vector.x = robot.navigation_gnss.rel_pos_n
+            rel_msg.vector.y = robot.navigation_gnss.rel_pos_e
+            rel_msg.vector.z = robot.navigation_gnss.rel_pos_d
+            self.rel_pos_publisher.publish(rel_msg)
+            # Publish acceleration
+            acc_msg = Vector3Stamped()
+            acc_msg.header.stamp = current_time
+            acc_msg.header.frame_id = 'wheel_frame'
+            acc_msg.vector.x = robot.navigation_gnss.acc_n
+            acc_msg.vector.y = robot.navigation_gnss.acc_e
+            acc_msg.vector.z = robot.navigation_gnss.acc_d
+            self.acc_publisher.publish(acc_msg)
             # Publish diagnostics
             self.publish_diagnostics(robot, current_time)
             
